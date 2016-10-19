@@ -1,8 +1,9 @@
 if Code.ensure_loaded?(Phoenix.HTML) do
   defimpl Phoenix.HTML.FormData, for: Ecto.Changeset do
-    def to_form(%Ecto.Changeset{model: model, params: params} = changeset, opts) do
+    def to_form(%Ecto.Changeset{params: params} = changeset, opts) do
       {name, opts} = Keyword.pop(opts, :as)
-      name = to_string(name || warn_name(opts) || form_for_name(model))
+      data = get_data(changeset)
+      name = to_string(name || warn_name(opts) || form_for_name(data))
 
       %Phoenix.HTML.Form{
         source: changeset,
@@ -10,17 +11,17 @@ if Code.ensure_loaded?(Phoenix.HTML) do
         id: name,
         name: name,
         errors: form_for_errors(changeset.errors),
-        model: model,
+        data: data,
         params: params || %{},
-        hidden: form_for_hidden(model),
-        options: Keyword.put_new(opts, :method, form_for_method(model))
+        hidden: form_for_hidden(data),
+        options: Keyword.put_new(opts, :method, form_for_method(data))
       }
     end
 
     def to_form(source, form, field, opts) do
       if Keyword.has_key?(opts, :default) do
         raise ArgumentError, ":default is not supported on inputs_for with changesets. " <>
-                             "The default value must be set in the model"
+                             "The default value must be set in the changeset data"
       end
 
       {skip_deleted, opts} = Keyword.pop(opts, :skip_deleted, false)
@@ -39,12 +40,12 @@ if Code.ensure_loaded?(Phoenix.HTML) do
               {:ok, nil} when skip_deleted -> []
               {:ok, map} when not is_nil(map) -> [validate_map!(map, field)]
               _  ->
-                [validate_map!(assoc_from_model(source.model, field), field) || module.__struct__]
+                [validate_map!(assoc_from_data(get_data(source), field), field) || module.__struct__]
             end
 
           for changeset <- skip_deleted(changesets, skip_deleted) do
             changeset = to_changeset(changeset, module, cast)
-            model = changeset.model
+            data = get_data(changeset)
 
             %Phoenix.HTML.Form{
               source: changeset,
@@ -52,9 +53,9 @@ if Code.ensure_loaded?(Phoenix.HTML) do
               id: id,
               name: name,
               errors: form_for_errors(changeset.errors),
-              model: model,
+              data: data,
               params: changeset.params || %{},
-              hidden: form_for_hidden(model),
+              hidden: form_for_hidden(data),
               options: opts
             }
           end
@@ -62,7 +63,7 @@ if Code.ensure_loaded?(Phoenix.HTML) do
         {:many, cast, module} ->
           changesets =
             validate_list!(Map.get(source.changes, field), field) ||
-            validate_list!(assoc_from_model(source.model, field), field) ||
+            validate_list!(assoc_from_data(get_data(source), field), field) ||
             []
 
           changesets =
@@ -76,7 +77,7 @@ if Code.ensure_loaded?(Phoenix.HTML) do
 
           for {changeset, index} <- Enum.with_index(changesets) do
             changeset = to_changeset(changeset, module, cast)
-            model = changeset.model
+            data = get_data(changeset)
             index_string = Integer.to_string(index)
 
             %Phoenix.HTML.Form{
@@ -86,9 +87,9 @@ if Code.ensure_loaded?(Phoenix.HTML) do
               name: name <> "[" <> index_string <> "]",
               index: index,
               errors: form_for_errors(changeset.errors),
-              model: model,
+              data: data,
               params: changeset.params || %{},
-              hidden: form_for_hidden(model),
+              hidden: form_for_hidden(data),
               options: opts
             }
           end
@@ -119,19 +120,19 @@ if Code.ensure_loaded?(Phoenix.HTML) do
             do: attr)
     end
 
-    defp assoc_from_model(model, field) do
-      assoc_from_model(model, Map.fetch!(model, field), field)
+    defp assoc_from_data(data, field) do
+      assoc_from_data(data, Map.fetch!(data, field), field)
     end
 
-    defp assoc_from_model(%{__meta__: %{state: :built}}, %Ecto.Association.NotLoaded{}, _field), do: nil
+    defp assoc_from_data(%{__meta__: %{state: :built}}, %Ecto.Association.NotLoaded{}, _field), do: nil
 
-    defp assoc_from_model(%{__struct__: struct}, %Ecto.Association.NotLoaded{}, field) do
+    defp assoc_from_data(%{__struct__: struct}, %Ecto.Association.NotLoaded{}, field) do
       raise ArgumentError, "using inputs_for for association `#{field}` " <>
         "from `#{inspect struct}` but it was not loaded. Please preload your " <>
         "associations before using them with loaded models in inputs_for"
     end
 
-    defp assoc_from_model(_model, value, _field) do
+    defp assoc_from_data(_data, value, _field) do
       value
     end
 
@@ -204,13 +205,14 @@ if Code.ensure_loaded?(Phoenix.HTML) do
           {cardinality, cast, module}
         _ ->
           raise ArgumentError,
-            "could not generate inputs for #{inspect field} from #{inspect changeset.model.__struct__}. " <>
+            "could not generate inputs for #{inspect field} from #{inspect changeset.data.__struct__}. " <>
             "Check the field exists and it is one of embeds_* or has_*"
       end
     end
 
     defp to_changeset(%Ecto.Changeset{} = changeset, _module, _cast), do: changeset
-    defp to_changeset(%{} = model, module, cast), do: apply(module, cast, [model, :empty])
+    defp to_changeset(%{} = data, _module, nil), do: Ecto.Changeset.change(data)
+    defp to_changeset(%{} = data, module, cast), do: apply(module, cast, [data, :empty])
 
     defp validate_list!(value, _what) when is_list(value) or is_nil(value), do: value
     defp validate_list!(value, what) do
@@ -222,9 +224,9 @@ if Code.ensure_loaded?(Phoenix.HTML) do
       raise ArgumentError, "expected #{what} to be a map/struct, got: #{inspect value}"
     end
 
-    defp form_for_hidden(model) do
+    defp form_for_hidden(data) do
       # Since they are primary keys, we should ignore nil values.
-      for {k, v} <- Ecto.Model.primary_key(model), v != nil, do: {k, v}
+      for {k, v} <- Ecto.Model.primary_key(data), v != nil, do: {k, v}
     end
 
     defp form_for_name(%{__struct__: module}) do
@@ -255,6 +257,9 @@ if Code.ensure_loaded?(Phoenix.HTML) do
         name
       end
     end
+
+    defp get_data(%{model: model}), do: model
+    defp get_data(%{data: data}), do: data
 
     defp underscore(<<>>), do: ""
 
